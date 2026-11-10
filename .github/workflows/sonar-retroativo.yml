@@ -1,0 +1,116 @@
+name: Sonar retroativo
+
+on:
+  workflow_dispatch:
+    inputs:
+      prs:
+        description: 'Lista de PRs em JSON: [{"pr":1,"sha":"...","branch":"..."}, ...]'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_ENV: test
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/anatoquizup_test?schema=public
+  JWT_SECRET_KEY: ci-test-secret
+  INTERNAL_TOKEN: ci-internal-token
+  BACKEND_URL: http://localhost:3333
+  QUIZ_SERVICE_URL: http://localhost:3334
+  AI_URL: ""
+  CORS_ORIGINS: "*"
+
+jobs:
+  base:
+    name: Analise da main (referencia)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: anatoquizup_test }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: ${{ vars.UPSTREAM }}
+          ref: main
+          fetch-depth: 0
+      - name: Ir para a main no inicio da R1
+        run: |
+          PRIMEIRO=$(echo '${{ inputs.prs }}' | jq -r '.[0].sha')
+          git fetch origin "$PRIMEIRO" || git fetch origin "+refs/pull/*/head:refs/remotes/origin/pr/*"
+          BASE=$(git merge-base origin/main "$PRIMEIRO")
+          echo "Commit de referencia da main: $BASE"
+          git checkout -q "$BASE"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        if: hashFiles('.nvmrc') != ''
+        with: { node-version-file: ".nvmrc" }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        if: hashFiles('.nvmrc') == ''
+        with: { node-version: "20" }
+      - run: npm ci
+      - name: Prisma
+        if: hashFiles('prisma/schema.prisma') != ''
+        run: npx prisma generate && (npx prisma db push --skip-generate || true)
+      - run: npm run build || true
+      - run: npm test -- --coverage --passWithNoTests --watchAll=false || true
+      - name: SonarCloud (main)
+        uses: SonarSource/sonarqube-scan-action@299e4b793aaa83bf2aba7c9c14bedbb485688ec4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.organization=${{ vars.SONAR_ORG }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+  prs:
+    name: PR ${{ matrix.item.pr }}
+    needs: base
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        item: ${{ fromJSON(inputs.prs) }}
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: anatoquizup_test }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: ${{ vars.UPSTREAM }}
+          ref: main
+          fetch-depth: 0
+      - name: Ir para o commit do PR
+        run: |
+          SHA='${{ matrix.item.sha }}'
+          git fetch origin "$SHA" 2>/dev/null || git fetch origin "+refs/pull/${{ matrix.item.pr }}/head:refs/remotes/origin/pr-head"
+          git checkout -q "$SHA"
+          git branch -f main origin/main
+          git log -1 --format='Commit %H de %ci: %s'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        if: hashFiles('.nvmrc') != ''
+        with: { node-version-file: ".nvmrc" }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        if: hashFiles('.nvmrc') == ''
+        with: { node-version: "20" }
+      - run: npm ci
+      - name: Prisma
+        if: hashFiles('prisma/schema.prisma') != ''
+        run: npx prisma generate && (npx prisma db push --skip-generate || true)
+      - run: npm run build || true
+      - run: npm test -- --coverage --passWithNoTests --watchAll=false || true
+      - name: SonarCloud (pull request)
+        uses: SonarSource/sonarqube-scan-action@299e4b793aaa83bf2aba7c9c14bedbb485688ec4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.organization=${{ vars.SONAR_ORG }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.pullrequest.key=${{ matrix.item.pr }}
+            -Dsonar.pullrequest.branch=${{ matrix.item.branch }}
+            -Dsonar.pullrequest.base=main
