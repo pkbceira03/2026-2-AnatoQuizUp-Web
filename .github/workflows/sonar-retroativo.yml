@@ -63,6 +63,7 @@ jobs:
           args: >
             -Dsonar.organization=${{ vars.SONAR_ORG }}
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+
   prs:
     name: PR ${{ matrix.item.pr }}
     needs: base
@@ -103,7 +104,7 @@ jobs:
         run: npx prisma generate && (npx prisma db push --skip-generate || true)
       - run: npm run build || true
       - run: npm test -- --coverage --passWithNoTests --watchAll=false || true
-      - name: SonarCloud (pull request)
+      - name: SonarCloud (PR como branch)
         uses: SonarSource/sonarqube-scan-action@299e4b793aaa83bf2aba7c9c14bedbb485688ec4
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -111,6 +112,5 @@ jobs:
           args: >
             -Dsonar.organization=${{ vars.SONAR_ORG }}
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
-            -Dsonar.pullrequest.key=${{ matrix.item.pr }}
-            -Dsonar.pullrequest.branch=${{ matrix.item.branch }}
-            -Dsonar.pullrequest.base=main
+            -Dsonar.branch.name=pr-${{ matrix.item.pr }}
+            -Dsonar.newCode.referenceBranch=main
