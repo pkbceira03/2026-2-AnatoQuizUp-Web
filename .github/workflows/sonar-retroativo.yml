@@ -37,10 +37,15 @@ jobs:
           ref: main
           fetch-depth: 0
       - name: Ir para a main no inicio da R1
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          PR=$(echo '${{ inputs.prs }}' | jq -r '.[0].pr')
           PRIMEIRO=$(echo '${{ inputs.prs }}' | jq -r '.[0].sha')
-          git fetch origin "$PRIMEIRO" || git fetch origin "+refs/pull/*/head:refs/remotes/origin/pr/*"
-          BASE=$(git merge-base origin/main "$PRIMEIRO")
+          git fetch -q origin "$PRIMEIRO" 2>/dev/null || true
+          BASE=$(gh api "repos/${{ vars.UPSTREAM }}/pulls/$PR/commits?per_page=100" --jq '.[0].parents[0].sha' 2>/dev/null || true)
+          BASE=${BASE:-$(git rev-parse "$PRIMEIRO~1")}
+          git fetch -q origin "$BASE" 2>/dev/null || true
           echo "Commit de referencia da main: $BASE"
           git checkout -q "$BASE"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -86,12 +91,27 @@ jobs:
           ref: main
           fetch-depth: 0
       - name: Ir para o commit do PR
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           SHA='${{ matrix.item.sha }}'
-          git fetch origin "$SHA" 2>/dev/null || git fetch origin "+refs/pull/${{ matrix.item.pr }}/head:refs/remotes/origin/pr-head"
+          PR='${{ matrix.item.pr }}'
+          git fetch origin "$SHA" 2>/dev/null || git fetch origin "+refs/pull/$PR/head:refs/remotes/origin/pr-head"
           git checkout -q "$SHA"
-          git branch -f main origin/main
-          git log -1 --format='Commit %H de %ci: %s'
+          git log -1 --format='Commit do PR: %H de %ci: %s'
+          BASE=$(gh api "repos/${{ vars.UPSTREAM }}/pulls/$PR" --jq .base.sha 2>/dev/null || true)
+          if [ -n "$BASE" ]; then
+            git fetch -q origin "$BASE" 2>/dev/null || true
+            MB=$(git merge-base "$SHA" "$BASE" 2>/dev/null || true)
+          fi
+          if [ -z "${MB:-}" ] || [ "$MB" = "$SHA" ]; then
+            FIRST=$(gh api "repos/${{ vars.UPSTREAM }}/pulls/$PR/commits?per_page=100" --jq '.[0].parents[0].sha' 2>/dev/null || true)
+            MB=${FIRST:-$(git rev-parse "$SHA~1")}
+            echo "Aviso: base calculada pelo primeiro commit do PR."
+          fi
+          git branch -f main "$MB"
+          echo "Base do PR (main de referencia): $MB"
+          echo "Arquivos alterados pelo PR: $(git diff --name-only "$MB" "$SHA" | wc -l)"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         if: hashFiles('.nvmrc') != ''
         with: { node-version-file: ".nvmrc" }
